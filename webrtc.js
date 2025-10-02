@@ -54,6 +54,15 @@ class MeetApp {
     this.chatMessages = document.getElementById('chatMessages');
     this.chatInput = document.getElementById('chatInput');
 
+    // Share elements
+    this.shareRoomBtn = document.getElementById('shareRoomBtn');
+    this.shareModal = document.getElementById('shareModal');
+    this.shareLink = document.getElementById('shareLink');
+    this.copyLinkBtn = document.getElementById('copyLinkBtn');
+    this.shareViaEmail = document.getElementById('shareViaEmail');
+    this.shareViaWhatsApp = document.getElementById('shareViaWhatsApp');
+    this.closeShareModal = document.getElementById('closeShareModal');
+
     // Notification
     this.notification = document.getElementById('notification');
   }
@@ -83,6 +92,18 @@ class MeetApp {
     this.roomInput.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') this.joinRoom();
     });
+
+    // Share functionality
+    this.shareRoomBtn.addEventListener('click', () => this.showShareModal());
+    this.copyLinkBtn.addEventListener('click', () => this.copyShareLink());
+    this.shareViaEmail.addEventListener('click', () => this.shareViaEmail());
+    this.shareViaWhatsApp.addEventListener('click', () => this.shareViaWhatsApp());
+    this.closeShareModal.addEventListener('click', () => this.hideShareModal());
+    
+    // Close modal when clicking outside
+    this.shareModal.addEventListener('click', (e) => {
+      if (e.target === this.shareModal) this.hideShareModal();
+    });
   }
 
   connectWebSocket() {
@@ -93,6 +114,7 @@ class MeetApp {
     
     this.ws.onopen = () => {
       console.log('WebSocket connected');
+      this.checkForRoomInURL();
       this.initializePreJoinCamera();
     };
 
@@ -613,63 +635,76 @@ class MeetApp {
   leaveCall() {
     console.log('Leaving call...');
     
-    // Send leave message to server
+    // Confirm before leaving if there are other participants
+    const participantCount = this.participants.size - 1; // Exclude self
+    if (participantCount > 0) {
+      const confirmLeave = confirm(`Are you sure you want to leave the meeting? There ${participantCount === 1 ? 'is' : 'are'} ${participantCount} other participant${participantCount === 1 ? '' : 's'} in the call.`);
+      if (!confirmLeave) {
+        return;
+      }
+    }
+    
+    this.forceLeaveCall();
+  }
+
+  forceLeaveCall() {
+    console.log('Force leaving call...');
+    
+    // Send leave message to server multiple times to ensure delivery
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'leave-room' }));
+      for (let i = 0; i < 3; i++) {
+        setTimeout(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'leave-room' }));
+          }
+        }, i * 100);
+      }
     }
     
     // Stop screen sharing if active
     if (this.isSharingScreen) {
-      this.stopScreenShare();
+      try {
+        this.stopScreenShare();
+      } catch (error) {
+        console.error('Error stopping screen share:', error);
+      }
     }
     
-    // Clean up peer connections
+    // Clean up peer connections aggressively
     this.peerConnections.forEach((pc, userId) => {
-      console.log(`Closing connection with ${userId}`);
+      console.log(`Force closing connection with ${userId}`);
       try {
-        pc.close();
+        if (pc.connectionState !== 'closed') {
+          pc.close();
+        }
       } catch (error) {
         console.error(`Error closing connection with ${userId}:`, error);
       }
     });
     this.peerConnections.clear();
     
-    // Stop all stream tracks
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(track => {
-        try {
-          track.stop();
-          console.log(`Stopped ${track.kind} track`);
-        } catch (error) {
-          console.error(`Error stopping ${track.kind} track:`, error);
-        }
-      });
-      this.localStream = null;
-    }
+    // Stop all stream tracks aggressively
+    const streamsToStop = [this.localStream, this.screenStream, this.originalStream];
     
-    // Stop screen stream if exists
-    if (this.screenStream) {
-      this.screenStream.getTracks().forEach(track => {
-        try {
-          track.stop();
-        } catch (error) {
-          console.error('Error stopping screen track:', error);
-        }
-      });
-      this.screenStream = null;
-    }
+    streamsToStop.forEach((stream, index) => {
+      if (stream) {
+        stream.getTracks().forEach(track => {
+          try {
+            if (track.readyState !== 'ended') {
+              track.stop();
+              console.log(`Stopped ${track.kind} track from stream ${index}`);
+            }
+          } catch (error) {
+            console.error(`Error stopping track:`, error);
+          }
+        });
+      }
+    });
     
-    // Stop original stream if exists
-    if (this.originalStream) {
-      this.originalStream.getTracks().forEach(track => {
-        try {
-          track.stop();
-        } catch (error) {
-          console.error('Error stopping original track:', error);
-        }
-      });
-      this.originalStream = null;
-    }
+    // Clear all stream references
+    this.localStream = null;
+    this.screenStream = null;
+    this.originalStream = null;
     
     // Clear participants
     this.participants.clear();
@@ -677,34 +712,44 @@ class MeetApp {
     // Reset room info
     this.roomId = null;
     
-    // Reset UI
+    // Hide share modal if open
+    this.hideShareModal();
+    
+    // Reset UI completely
     this.meetingInterface.classList.add('hidden');
     this.preJoinScreen.classList.remove('hidden');
     this.videosGrid.innerHTML = '';
     this.chatMessages.innerHTML = '';
     this.sidebar.classList.remove('open');
     
-    // Reset control states
+    // Reset all control states
     this.isVideoEnabled = true;
     this.isAudioEnabled = true;
     this.isSharingScreen = false;
     this.isSelfViewVisible = true;
+    
+    // Reset button states
     this.toggleCamera.classList.add('active');
     this.toggleMic.classList.add('active');
     this.shareScreen.classList.remove('active');
     this.toggleSelfView.classList.add('active');
     
-    // Update icons
+    // Update all icons
     this.toggleCamera.querySelector('i').className = 'fas fa-video';
     this.toggleMic.querySelector('i').className = 'fas fa-microphone';
     this.toggleSelfView.querySelector('i').className = 'fas fa-eye';
     
-    // Reinitialize camera for pre-join
+    // Clear URL parameters
+    if (window.location.search) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+    
+    // Reinitialize camera for pre-join with delay
     setTimeout(() => {
       this.initializePreJoinCamera();
-    }, 500);
+    }, 1000);
     
-    this.showNotification('Left the meeting');
+    this.showNotification('Successfully left the meeting');
   }
 
   toggleSelfViewVisibility() {
@@ -739,6 +784,63 @@ class MeetApp {
       localParticipant.videoWrapper.classList.remove('minimized');
       localParticipant.videoWrapper.onclick = null;
     };
+  }
+
+  checkForRoomInURL() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomId = urlParams.get('room');
+    
+    if (roomId) {
+      // Auto-fill room input and show join button prominently
+      this.roomInput.value = roomId;
+      this.roomInput.style.borderColor = '#4285f4';
+      this.joinRoomBtn.style.background = '#4285f4';
+      this.joinRoomBtn.textContent = 'Join Meeting';
+      this.showNotification(`Ready to join room: ${roomId}`);
+    }
+  }
+
+  showShareModal() {
+    if (!this.roomId) {
+      this.showNotification('No active room to share', 'error');
+      return;
+    }
+    
+    const shareUrl = `${window.location.origin}${window.location.pathname}?room=${this.roomId}`;
+    this.shareLink.value = shareUrl;
+    this.shareModal.classList.remove('hidden');
+  }
+
+  hideShareModal() {
+    this.shareModal.classList.add('hidden');
+  }
+
+  async copyShareLink() {
+    try {
+      await navigator.clipboard.writeText(this.shareLink.value);
+      this.showNotification('Link copied to clipboard!');
+      this.copyLinkBtn.innerHTML = '<i class="fas fa-check"></i> Copied';
+      
+      setTimeout(() => {
+        this.copyLinkBtn.innerHTML = '<i class="fas fa-copy"></i> Copy';
+      }, 2000);
+    } catch (error) {
+      // Fallback for older browsers
+      this.shareLink.select();
+      document.execCommand('copy');
+      this.showNotification('Link copied!');
+    }
+  }
+
+  shareViaEmail() {
+    const subject = encodeURIComponent('Join my video meeting');
+    const body = encodeURIComponent(`Hi! Join my video meeting using this link:\n\n${this.shareLink.value}\n\nSee you there!`);
+    window.open(`mailto:?subject=${subject}&body=${body}`);
+  }
+
+  shareViaWhatsApp() {
+    const text = encodeURIComponent(`Join my video meeting: ${this.shareLink.value}`);
+    window.open(`https://wa.me/?text=${text}`);
   }
 
   showNotification(message, type = 'info') {
