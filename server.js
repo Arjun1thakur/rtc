@@ -98,7 +98,7 @@ wss.on('connection', function connection(ws) {
           }
           break;
         case 'chat-message':
-          // Forward chat message to other users in the same room
+          // Forward chat message to other users in the same room (sender displays locally)
           if (user.roomId) {
             broadcastToRoom(user.roomId, data, userId);
           }

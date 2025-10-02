@@ -94,13 +94,25 @@ class MeetApp {
     };
 
     this.ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      this.handleSignalingData(data);
+      try {
+        const data = JSON.parse(event.data);
+        this.handleSignalingData(data);
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error);
+      }
     };
 
-    this.ws.onclose = () => {
-      console.log('WebSocket disconnected');
-      this.showNotification('Connection lost. Please refresh the page.', 'error');
+    this.ws.onclose = (event) => {
+      console.log('WebSocket disconnected:', event.code, event.reason);
+      if (this.roomId) {
+        this.showNotification('Connection lost. Attempting to reconnect...', 'error');
+        // Try to reconnect after a delay
+        setTimeout(() => {
+          if (this.ws.readyState === WebSocket.CLOSED) {
+            this.connectWebSocket();
+          }
+        }, 3000);
+      }
     };
 
     this.ws.onerror = (error) => {
@@ -180,13 +192,21 @@ class MeetApp {
     this.meetingInterface.classList.remove('hidden');
     this.roomIdDisplay.textContent = `Room: ${roomId}`;
     
-    // Add local video to grid
-    this.addVideoToGrid(this.userId, this.localStream, true);
+    // Add local video to grid only if not already added
+    if (!this.participants.has(this.userId)) {
+      this.addVideoToGrid(this.userId, this.localStream, true);
+    }
     
     this.showNotification(`Joined room: ${roomId}`);
   }
 
   addVideoToGrid(userId, stream, isLocal = false) {
+    // Check if participant already exists
+    if (this.participants.has(userId)) {
+      console.log(`Video for user ${userId} already exists`);
+      return;
+    }
+
     const videoWrapper = document.createElement('div');
     videoWrapper.className = 'video-wrapper';
     videoWrapper.id = `video-${userId}`;
@@ -210,6 +230,8 @@ class MeetApp {
 
     // Store participant info
     this.participants.set(userId, { videoWrapper, video, overlay, stream });
+    
+    console.log(`Added video for user: ${userId}, isLocal: ${isLocal}`);
   }
 
   removeVideoFromGrid(userId) {
@@ -298,7 +320,14 @@ class MeetApp {
       case 'user-left':
         this.updateParticipantsCount(data.participants.length);
         this.removeVideoFromGrid(data.userId);
-        this.peerConnections.delete(data.userId);
+        
+        // Close and remove peer connection
+        const pc = this.peerConnections.get(data.userId);
+        if (pc) {
+          pc.close();
+          this.peerConnections.delete(data.userId);
+        }
+        
         this.showNotification(`User ${data.userId.substring(0, 6)} left`);
         break;
 
@@ -315,8 +344,11 @@ class MeetApp {
         break;
 
       case 'chat-message':
-        this.displayChatMessage(data);
-      break;
+        // Only display if it's not from ourselves (we already displayed it locally)
+        if (data.userId !== this.userId) {
+          this.displayChatMessage(data);
+        }
+        break;
 
       case 'error':
         this.showNotification(data.message, 'error');
@@ -466,35 +498,48 @@ class MeetApp {
     const message = this.chatInput.value.trim();
     if (!message) return;
     
-    this.ws.send(JSON.stringify({
+    const chatData = {
       type: 'chat-message',
       message: message,
       userId: this.userId,
       timestamp: Date.now()
-    }));
+    };
+    
+    // Display own message immediately
+    this.displayChatMessage(chatData);
+    
+    // Send to server to broadcast to others
+    this.ws.send(JSON.stringify(chatData));
     
     this.chatInput.value = '';
   }
 
   displayChatMessage(data) {
     const messageDiv = document.createElement('div');
-    messageDiv.className = 'chat-message';
-    
     const isOwnMessage = data.userId === this.userId;
+    
+    messageDiv.className = `chat-message ${isOwnMessage ? 'own' : 'other'}`;
+    
     const senderName = isOwnMessage ? 'You' : `User ${data.userId.substring(0, 6)}`;
     
     messageDiv.innerHTML = `
       <div class="sender">${senderName}</div>
-      <div>${data.message}</div>
+      <div>${this.escapeHtml(data.message)}</div>
     `;
     
     this.chatMessages.appendChild(messageDiv);
     this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
     
-    // Show notification if chat is closed
-    if (!this.sidebar.classList.contains('open')) {
+    // Show notification if chat is closed and it's not own message
+    if (!this.sidebar.classList.contains('open') && !isOwnMessage) {
       this.showNotification(`New message from ${senderName}`);
     }
+  }
+
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
   }
 
   updateParticipantsCount(count) {
@@ -502,18 +547,35 @@ class MeetApp {
   }
 
   leaveCall() {
-    if (this.ws) {
+    console.log('Leaving call...');
+    
+    // Send leave message to server
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'leave-room' }));
     }
     
-    // Clean up
-    this.peerConnections.forEach(pc => pc.close());
+    // Clean up peer connections
+    this.peerConnections.forEach((pc, userId) => {
+      console.log(`Closing connection with ${userId}`);
+      pc.close();
+    });
     this.peerConnections.clear();
+    
+    // Stop local stream tracks
+    if (this.localStream) {
+      this.localStream.getTracks().forEach(track => {
+        track.stop();
+        console.log(`Stopped ${track.kind} track`);
+      });
+      this.localStream = null;
+    }
+    
+    // Clear participants
     this.participants.clear();
     
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(track => track.stop());
-    }
+    // Reset room info
+    this.roomId = null;
+    this.userId = null;
     
     // Reset UI
     this.meetingInterface.classList.add('hidden');
@@ -522,8 +584,19 @@ class MeetApp {
     this.chatMessages.innerHTML = '';
     this.sidebar.classList.remove('open');
     
-    // Reinitialize
-    this.initializePreJoinCamera();
+    // Reset control states
+    this.isVideoEnabled = true;
+    this.isAudioEnabled = true;
+    this.isSharingScreen = false;
+    this.toggleCamera.classList.add('active');
+    this.toggleMic.classList.add('active');
+    this.shareScreen.classList.remove('active');
+    
+    // Reinitialize camera for pre-join
+    setTimeout(() => {
+      this.initializePreJoinCamera();
+    }, 100);
+    
     this.showNotification('Left the meeting');
   }
 
