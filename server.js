@@ -111,8 +111,14 @@ wss.on('connection', function connection(ws) {
     }
   });
 
-  ws.on('close', function() {
-    console.log(`User ${userId} disconnected`);
+  ws.on('close', function(code, reason) {
+    console.log(`User ${userId} disconnected (${code}: ${reason})`);
+    handleLeaveRoom(userId);
+    users.delete(userId);
+  });
+
+  ws.on('error', function(error) {
+    console.error(`WebSocket error for user ${userId}:`, error);
     handleLeaveRoom(userId);
     users.delete(userId);
   });

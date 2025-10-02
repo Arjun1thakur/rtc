@@ -9,6 +9,7 @@ class MeetApp {
     this.isVideoEnabled = true;
     this.isAudioEnabled = true;
     this.isSharingScreen = false;
+    this.isSelfViewVisible = true;
     this.participants = new Map();
     
     this.config = {
@@ -44,6 +45,7 @@ class MeetApp {
     this.toggleMic = document.getElementById('toggleMic');
     this.shareScreen = document.getElementById('shareScreen');
     this.toggleChat = document.getElementById('toggleChat');
+    this.toggleSelfView = document.getElementById('toggleSelfView');
     this.leaveCall = document.getElementById('leaveCall');
 
     // Chat elements
@@ -68,6 +70,7 @@ class MeetApp {
     this.toggleMic.addEventListener('click', () => this.toggleAudio());
     this.shareScreen.addEventListener('click', () => this.toggleScreenShare());
     this.toggleChat.addEventListener('click', () => this.toggleChatSidebar());
+    this.toggleSelfView.addEventListener('click', () => this.toggleSelfViewVisibility());
     this.leaveCall.addEventListener('click', () => this.leaveCall());
 
     // Chat
@@ -231,6 +234,13 @@ class MeetApp {
     // Store participant info
     this.participants.set(userId, { videoWrapper, video, overlay, stream });
     
+    // Add double-click to minimize for local video
+    if (isLocal) {
+      videoWrapper.addEventListener('dblclick', () => {
+        this.minimizeSelfView();
+      });
+    }
+    
     console.log(`Added video for user: ${userId}, isLocal: ${isLocal}`);
   }
 
@@ -341,14 +351,14 @@ class MeetApp {
 
     case 'candidate':
         await this.handleCandidate(data);
-        break;
+      break;
 
       case 'chat-message':
         // Only display if it's not from ourselves (we already displayed it locally)
         if (data.userId !== this.userId) {
           this.displayChatMessage(data);
-        }
-        break;
+      }
+      break;
 
       case 'error':
         this.showNotification(data.message, 'error');
@@ -424,19 +434,44 @@ class MeetApp {
     if (!this.isSharingScreen) {
       try {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: true
+          video: {
+            cursor: 'always',
+            displaySurface: 'monitor'
+          },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            sampleRate: 44100
+          }
         });
         
-        // Replace video track in all peer connections
+        // Store original stream for later restoration
+        this.originalStream = this.localStream;
+        
+        // Replace both video and audio tracks in all peer connections
         const videoTrack = screenStream.getVideoTracks()[0];
+        const audioTrack = screenStream.getAudioTracks()[0];
         
         this.peerConnections.forEach(async (pc) => {
-          const sender = pc.getSenders().find(s => 
+          // Replace video track
+          const videoSender = pc.getSenders().find(s => 
             s.track && s.track.kind === 'video'
           );
-          if (sender) {
-            await sender.replaceTrack(videoTrack);
+          if (videoSender && videoTrack) {
+            await videoSender.replaceTrack(videoTrack);
+          }
+          
+          // Replace or add audio track for screen share
+          if (audioTrack) {
+            const audioSender = pc.getSenders().find(s => 
+              s.track && s.track.kind === 'audio'
+            );
+            if (audioSender) {
+              await audioSender.replaceTrack(audioTrack);
+            } else {
+              // Add audio track if not present
+              pc.addTrack(audioTrack, screenStream);
+            }
           }
         });
         
@@ -451,13 +486,19 @@ class MeetApp {
           this.stopScreenShare();
         };
         
+        // Store screen stream reference
+        this.screenStream = screenStream;
         this.isSharingScreen = true;
         this.shareScreen.classList.add('active');
-        this.showNotification('Screen sharing started');
+        this.showNotification('Screen sharing with audio started');
         
       } catch (error) {
         console.error('Error starting screen share:', error);
-        this.showNotification('Could not start screen sharing', 'error');
+        if (error.name === 'NotAllowedError') {
+          this.showNotification('Screen sharing permission denied', 'error');
+        } else {
+          this.showNotification('Could not start screen sharing', 'error');
+        }
       }
     } else {
       this.stopScreenShare();
@@ -465,24 +506,47 @@ class MeetApp {
   }
 
   async stopScreenShare() {
-    if (this.localStream) {
-      const videoTrack = this.localStream.getVideoTracks()[0];
+    // Stop screen stream tracks
+    if (this.screenStream) {
+      this.screenStream.getTracks().forEach(track => {
+        track.stop();
+      });
+      this.screenStream = null;
+    }
+    
+    // Restore original camera and microphone
+    if (this.originalStream) {
+      const videoTrack = this.originalStream.getVideoTracks()[0];
+      const audioTrack = this.originalStream.getAudioTracks()[0];
       
-      // Replace screen share track with camera track
+      // Replace tracks back to camera/microphone
       this.peerConnections.forEach(async (pc) => {
-        const sender = pc.getSenders().find(s => 
+        // Restore video track
+        const videoSender = pc.getSenders().find(s => 
           s.track && s.track.kind === 'video'
         );
-        if (sender && videoTrack) {
-          await sender.replaceTrack(videoTrack);
+        if (videoSender && videoTrack) {
+          await videoSender.replaceTrack(videoTrack);
+        }
+        
+        // Restore audio track
+        const audioSender = pc.getSenders().find(s => 
+          s.track && s.track.kind === 'audio'
+        );
+        if (audioSender && audioTrack) {
+          await audioSender.replaceTrack(audioTrack);
         }
       });
       
       // Update local video
       const localParticipant = this.participants.get(this.userId);
       if (localParticipant) {
-        localParticipant.video.srcObject = this.localStream;
+        localParticipant.video.srcObject = this.originalStream;
       }
+      
+      // Restore local stream reference
+      this.localStream = this.originalStream;
+      this.originalStream = null;
     }
     
     this.isSharingScreen = false;
@@ -554,20 +618,57 @@ class MeetApp {
       this.ws.send(JSON.stringify({ type: 'leave-room' }));
     }
     
+    // Stop screen sharing if active
+    if (this.isSharingScreen) {
+      this.stopScreenShare();
+    }
+    
     // Clean up peer connections
     this.peerConnections.forEach((pc, userId) => {
       console.log(`Closing connection with ${userId}`);
-      pc.close();
+      try {
+        pc.close();
+      } catch (error) {
+        console.error(`Error closing connection with ${userId}:`, error);
+      }
     });
     this.peerConnections.clear();
     
-    // Stop local stream tracks
+    // Stop all stream tracks
     if (this.localStream) {
       this.localStream.getTracks().forEach(track => {
-        track.stop();
-        console.log(`Stopped ${track.kind} track`);
+        try {
+          track.stop();
+          console.log(`Stopped ${track.kind} track`);
+        } catch (error) {
+          console.error(`Error stopping ${track.kind} track:`, error);
+        }
       });
       this.localStream = null;
+    }
+    
+    // Stop screen stream if exists
+    if (this.screenStream) {
+      this.screenStream.getTracks().forEach(track => {
+        try {
+          track.stop();
+        } catch (error) {
+          console.error('Error stopping screen track:', error);
+        }
+      });
+      this.screenStream = null;
+    }
+    
+    // Stop original stream if exists
+    if (this.originalStream) {
+      this.originalStream.getTracks().forEach(track => {
+        try {
+          track.stop();
+        } catch (error) {
+          console.error('Error stopping original track:', error);
+        }
+      });
+      this.originalStream = null;
     }
     
     // Clear participants
@@ -575,7 +676,6 @@ class MeetApp {
     
     // Reset room info
     this.roomId = null;
-    this.userId = null;
     
     // Reset UI
     this.meetingInterface.classList.add('hidden');
@@ -588,16 +688,57 @@ class MeetApp {
     this.isVideoEnabled = true;
     this.isAudioEnabled = true;
     this.isSharingScreen = false;
+    this.isSelfViewVisible = true;
     this.toggleCamera.classList.add('active');
     this.toggleMic.classList.add('active');
     this.shareScreen.classList.remove('active');
+    this.toggleSelfView.classList.add('active');
+    
+    // Update icons
+    this.toggleCamera.querySelector('i').className = 'fas fa-video';
+    this.toggleMic.querySelector('i').className = 'fas fa-microphone';
+    this.toggleSelfView.querySelector('i').className = 'fas fa-eye';
     
     // Reinitialize camera for pre-join
     setTimeout(() => {
       this.initializePreJoinCamera();
-    }, 100);
+    }, 500);
     
     this.showNotification('Left the meeting');
+  }
+
+  toggleSelfViewVisibility() {
+    const localParticipant = this.participants.get(this.userId);
+    if (!localParticipant) return;
+    
+    this.isSelfViewVisible = !this.isSelfViewVisible;
+    
+    if (this.isSelfViewVisible) {
+      // Show self view
+      localParticipant.videoWrapper.classList.remove('hidden', 'minimized');
+      this.toggleSelfView.classList.add('active');
+      this.toggleSelfView.querySelector('i').className = 'fas fa-eye';
+      this.showNotification('Self view shown');
+    } else {
+      // Hide self view
+      localParticipant.videoWrapper.classList.add('hidden');
+      this.toggleSelfView.classList.remove('active');
+      this.toggleSelfView.querySelector('i').className = 'fas fa-eye-slash';
+      this.showNotification('Self view hidden');
+    }
+  }
+
+  minimizeSelfView() {
+    const localParticipant = this.participants.get(this.userId);
+    if (!localParticipant || !this.isSelfViewVisible) return;
+    
+    localParticipant.videoWrapper.classList.add('minimized');
+    
+    // Add click handler to restore
+    localParticipant.videoWrapper.onclick = () => {
+      localParticipant.videoWrapper.classList.remove('minimized');
+      localParticipant.videoWrapper.onclick = null;
+    };
   }
 
   showNotification(message, type = 'info') {
