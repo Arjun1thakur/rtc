@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meet Clone - Video Conference</title>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #202124;
+      color: white;
+      overflow: hidden;
+    }
+
+    .container {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .header {
+      background: #1a1a1a;
+      padding: 15px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #333;
+    }
+
+    .logo {
+      font-size: 24px;
+      font-weight: bold;
+      color: #4285f4;
+    }
+
+    .room-info {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+    }
+
+    .room-id {
+      background: #333;
+      padding: 8px 12px;
+      border-radius: 20px;
+      font-size: 14px;
+    }
+
+    .participants-count {
+      background: #4285f4;
+      padding: 8px 12px;
+      border-radius: 20px;
+      font-size: 14px;
+    }
+
+    .main-content {
+      flex: 1;
+      display: flex;
+      position: relative;
+    }
+
+    .video-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    .videos-grid {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 10px;
+      padding: 20px;
+      overflow-y: auto;
+    }
+
+    .video-wrapper {
+      position: relative;
+      background: #1a1a1a;
+      border-radius: 12px;
+      overflow: hidden;
+      aspect-ratio: 16/9;
+      border: 2px solid transparent;
+      transition: border-color 0.3s ease;
+    }
+
+    .video-wrapper.speaking {
+      border-color: #4285f4;
+    }
+
+    .video-wrapper video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      background: #000;
+    }
+
+    .video-overlay {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 5px 10px;
+      border-radius: 15px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .video-overlay.muted {
+      color: #ea4335;
+    }
+
+    .controls {
+      background: #1a1a1a;
+      padding: 20px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 15px;
+      border-top: 1px solid #333;
+    }
+
+    .control-btn {
+      width: 50px;
+      height: 50px;
+      border: none;
+      border-radius: 50%;
+      background: #333;
+      color: white;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      transition: all 0.3s ease;
+      position: relative;
+    }
+
+    .control-btn:hover {
+      background: #444;
+      transform: scale(1.1);
+    }
+
+    .control-btn.active {
+      background: #4285f4;
+    }
+
+    .control-btn.danger {
+      background: #ea4335;
+    }
+
+    .control-btn.danger:hover {
+      background: #d33b2c;
+    }
+
+    .control-btn.screen-share.active {
+      background: #34a853;
+    }
+
+    .sidebar {
+      width: 350px;
+      background: #1a1a1a;
+      border-left: 1px solid #333;
+      display: flex;
+      flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.3s ease;
+    }
+
+    .sidebar.open {
+      transform: translateX(0);
+    }
+
+    .sidebar-header {
+      padding: 20px;
+      border-bottom: 1px solid #333;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .sidebar-content {
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .chat-container {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chat-messages {
+      flex: 1;
+      padding: 20px;
+      overflow-y: auto;
+    }
+
+    .chat-message {
+      margin-bottom: 15px;
+      padding: 10px;
+      background: #333;
+      border-radius: 8px;
+    }
+
+    .chat-message .sender {
+      font-weight: bold;
+      color: #4285f4;
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+
+    .chat-input-container {
+      padding: 20px;
+      border-top: 1px solid #333;
+    }
+
+    .chat-input {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #333;
+      border-radius: 20px;
+      background: #333;
+      color: white;
+      outline: none;
+    }
+
+    .chat-input:focus {
+      border-color: #4285f4;
+    }
+
+    .pre-join {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: #202124;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .pre-join-card {
+      background: #1a1a1a;
+      padding: 40px;
+      border-radius: 12px;
+      text-align: center;
+      max-width: 500px;
+      width: 90%;
+    }
+
+    .pre-join-video {
+      width: 300px;
+      height: 200px;
+      background: #000;
+      border-radius: 8px;
+      margin: 20px auto;
+      object-fit: cover;
+    }
+
+    .pre-join-controls {
+      display: flex;
+      justify-content: center;
+      gap: 15px;
+      margin: 20px 0;
+    }
+
+    .room-input {
+      width: 100%;
+      padding: 12px;
+      margin: 10px 0;
+      border: 1px solid #333;
+      border-radius: 8px;
+      background: #333;
+      color: white;
+      outline: none;
+    }
+
+    .room-input:focus {
+      border-color: #4285f4;
+    }
+
+    .btn {
+      padding: 12px 24px;
+      border: none;
+      border-radius: 8px;
+      background: #4285f4;
+      color: white;
+      cursor: pointer;
+      font-size: 16px;
+      margin: 5px;
+      transition: background 0.3s ease;
+    }
+
+    .btn:hover {
+      background: #3367d6;
+    }
+
+    .btn.secondary {
+      background: #333;
+    }
+
+    .btn.secondary:hover {
+      background: #444;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .notification {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #4285f4;
+      color: white;
+      padding: 15px 20px;
+      border-radius: 8px;
+      z-index: 1001;
+      transform: translateX(100%);
+      transition: transform 0.3s ease;
+    }
+
+    .notification.show {
+      transform: translateX(0);
+    }
+
+    .notification.error {
+      background: #ea4335;
+    }
+
+    @media (max-width: 768px) {
+      .sidebar {
+        width: 100%;
+        position: fixed;
+        top: 0;
+        right: 0;
+        height: 100%;
+        z-index: 999;
+      }
+
+      .videos-grid {
+        grid-template-columns: 1fr;
+        padding: 10px;
+      }
+
+      .controls {
+        padding: 15px;
+        gap: 10px;
+      }
+
+      .control-btn {
+        width: 45px;
+        height: 45px;
+        font-size: 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Pre-join Screen -->
+    <div id="preJoin" class="pre-join">
+      <div class="pre-join-card">
+        <h2>Join Meeting</h2>
+        <video id="preJoinVideo" class="pre-join-video" autoplay muted></video>
+        <div class="pre-join-controls">
+          <button id="preJoinCamera" class="control-btn active">
+            <i class="fas fa-video"></i>
+          </button>
+          <button id="preJoinMic" class="control-btn active">
+            <i class="fas fa-microphone"></i>
+          </button>
+        </div>
+        <input type="text" id="roomInput" class="room-input" placeholder="Enter room ID (optional)">
+        <div>
+          <button id="createRoomBtn" class="btn">Create New Room</button>
+          <button id="joinRoomBtn" class="btn secondary">Join Room</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Meeting Interface -->
+    <div id="meetingInterface" class="hidden">
+      <div class="header">
+        <div class="logo">
+          <i class="fas fa-video"></i> Meet Clone
+        </div>
+        <div class="room-info">
+          <div id="roomIdDisplay" class="room-id">Room: </div>
+          <div id="participantsCount" class="participants-count">
+            <i class="fas fa-users"></i> 1
+          </div>
+        </div>
+      </div>
+
+      <div class="main-content">
+        <div class="video-container">
+          <div id="videosGrid" class="videos-grid">
+            <!-- Videos will be added dynamically -->
+          </div>
+
+          <div class="controls">
+            <button id="toggleCamera" class="control-btn active">
+              <i class="fas fa-video"></i>
+            </button>
+            <button id="toggleMic" class="control-btn active">
+              <i class="fas fa-microphone"></i>
+            </button>
+            <button id="shareScreen" class="control-btn screen-share">
+              <i class="fas fa-desktop"></i>
+            </button>
+            <button id="toggleChat" class="control-btn">
+              <i class="fas fa-comment"></i>
+            </button>
+            <button id="leaveCall" class="control-btn danger">
+              <i class="fas fa-phone-slash"></i>
+            </button>
+          </div>
+        </div>
+
+        <div id="sidebar" class="sidebar">
+          <div class="sidebar-header">
+            <h3>Chat</h3>
+            <button id="closeSidebar" class="control-btn" style="width: 30px; height: 30px; font-size: 14px;">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+          <div class="sidebar-content">
+            <div class="chat-container">
+              <div id="chatMessages" class="chat-messages">
+                <!-- Chat messages will appear here -->
+              </div>
+              <div class="chat-input-container">
+                <input type="text" id="chatInput" class="chat-input" placeholder="Type a message...">
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Notification -->
+  <div id="notification" class="notification"></div>
+
+  <script src="webrtc.js"></script>
+</body>
+</html>
